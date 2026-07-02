@@ -275,4 +275,5 @@ async def parasil(ctx, member: discord.Member, miktar: int):
     await ctx.send(f"⚙️ **Yönetici Sistemi:** {member.mention} kullanıcısının banka hesabından **${miktar:,}** silindi.")
 
 # Botu Başlatma Satırı
-bot.run("MTUyMjI5Nzk1MzIwNzcxNzkwOA.G49Ene.h-o4WfGZIp2CgO7R6R2eBS17qbV-o8qd1HvJ-o")
+bot.run(os.environ.get('TOKEN'))
+
