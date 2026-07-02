@@ -1,0 +1,278 @@
+import discord
+from discord.ext import commands
+import json
+import os
+import random
+
+# Bot kurulumu ve tüm yetkilerin (Intents) açılması
+bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+DATA_FILE = "ekonomi.json"
+
+# --- 1. MAAŞ TABLOSU (Sunucundaki Rol İsimleriyle Aynı Olmalı) ---
+MAAS_SISTEMI = {
+    "mülk sahibi": 20000, "polis memuru": 8000, "asker": 7500, "avukat": 11000,
+    "savcı": 13000, "hakim": 15000, "illegal": 0, "doktor": 12000, "mit başkanı": 18000,
+    "şerif": 10000, "şerif yardımcısı": 9000, "yazılım geliştirici": 9500, "öğretmen": 7000,
+    "itfaiyeci": 8000, "aşçı": 6500, "hemşire": 8000, "eczacı": 10000, "veteriner": 9000,
+    "psikolog": 8500, "muhasebeci": 7500, "elektrikçi": 7000, "tesisatçı": 7000,
+    "grafik tasarımcı": 6500, "gazeteci": 6000, "fotoğrafçı": 5800, "öğrenci": 1500, 
+    "işsiz": 1000  # Sistemde mesleği olmayanlara otomatik verilecek miktar
+}
+
+# --- 2. MARKET VE GALERİ TABLOSU ---
+MARKET = {
+    "lüks motor": 50000, "normal motor": 18000, "orman evi": 100000, "müstakil ev": 180000,
+    "villa": 450000, "konak": 1000000, "normal ev": 130000, "apartman dairesi": 70000,
+    "spor araba": 220000, "lüks araba": 350000, "normal araba": 60000
+}
+
+# --- VERİTABANI YÖNETİM FONKSİYONLARI ---
+def veri_yukle():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def veri_kaydet(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+def kullanici_kontrol(data, user_id):
+    if user_id not in data:
+        data[user_id] = {"cüzdan": 1000, "banka": 0, "envanter": []} # Yeni başlayanlara $1000 cep harçlığı
+    if "envanter" not in data[user_id]:
+        data[user_id]["envanter"] = []
+    return data
+
+@bot.event
+async def on_ready():
+    print(f"🚀 {bot.user.name} Şehir Ekonomisi ve Rol Yapma Botu başarıyla aktif edildi!")
+
+# ==================== 1. BANKACILIK & HESAP SİSTEMİ ====================
+
+@bot.command()
+async def hesap(ctx, member: discord.Member = None):
+    """Oyuncunun cüzdan, banka bakiyesini ve mülklerini gösterir."""
+    member = member or ctx.author
+    data = veri_yukle()
+    data = kullanici_kontrol(data, str(member.id))
+    bakiye = data[str(member.id)]
+    
+    embed = discord.Embed(title=f"💰 {member.name} Hesap Detayları", color=discord.Color.green())
+    embed.add_field(name="💵 Cüzdan", value=f"${bakiye['cüzdan']:,}", inline=True)
+    embed.add_field(name="🏦 Banka", value=f"${bakiye['banka']:,}", inline=True)
+    embed.add_field(name="🎒 Sahip Olunan Mülkler/Araçlar", value=", ".join(bakiye['envanter']) if bakiye['envanter'] else "Mülk Yok", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def yatır(ctx, miktar: str):
+    """Cüzdandaki nakit parayı bankaya güvenliğe yatırır."""
+    data = veri_yukle()
+    uid = str(ctx.author.id)
+    data = kullanici_kontrol(data, uid)
+    
+    if miktar.lower() == "hepsi":
+        miktar = data[uid]["cüzdan"]
+    else:
+        try: miktar = int(miktar)
+        except ValueError: return await ctx.send("❌ Lütfen geçerli bir sayı veya 'hepsi' yaz.")
+        
+    if miktar <= 0 or data[uid]["cüzdan"] < miktar:
+        return await ctx.send("❌ Cüzdanında yatırmak istediğin kadar nakit para yok!")
+        
+    data[uid]["cüzdan"] -= miktar
+    data[uid]["banka"] += miktar
+    veri_kaydet(data)
+    await ctx.send(f"🏦 **${miktar:,}** cüzdanından banka hesabına başarıyla yatırıldı.")
+
+@bot.command()
+async def çek(ctx, miktar: str):
+    """Bankadan nakit para çeker."""
+    data = veri_yukle()
+    uid = str(ctx.author.id)
+    data = kullanici_kontrol(data, uid)
+    
+    if miktar.lower() == "hepsi":
+        miktar = data[uid]["banka"]
+    else:
+        try: miktar = int(miktar)
+        except ValueError: return await ctx.send("❌ Lütfen geçerli bir sayı veya 'hepsi' yaz.")
+        
+    if miktar <= 0 or data[uid]["banka"] < miktar:
+        return await ctx.send("❌ Banka hesabında çekmek istediğin kadar paran yok!")
+        
+    data[uid]["banka"] -= miktar
+    data[uid]["cüzdan"] += miktar
+    veri_kaydet(data)
+    await ctx.send(f"💵 Bankadan **${miktar:,}** nakit çekilerek cüzdanına eklendi.")
+
+@bot.command()
+async def transfer(ctx, member: discord.Member, miktar: int):
+    """Cüzdandan başka bir oyuncuya elden nakit para verir."""
+    if member.id == ctx.author.id: return await ctx.send("❌ Kendine para gönderemezsin!")
+    if miktar <= 0: return await ctx.send("❌ Geçersiz miktar!")
+    
+    data = veri_yukle()
+    uid, mid = str(ctx.author.id), str(member.id)
+    data = kullanici_kontrol(data, uid)
+    data = kullanici_kontrol(data, mid)
+    
+    if data[uid]["cüzdan"] < miktar:
+        return await ctx.send("❌ Cüzdanında transfer edecek kadar nakit yok! Gerekirse bankadan para çek.")
+        
+    data[uid]["cüzdan"] -= miktar
+    data[mid]["cüzdan"] += miktar
+    veri_kaydet(data)
+    await ctx.send(f"✅ {ctx.author.mention}, {member.mention} kullanıcısına elden **${miktar:,}** nakit verdi!")
+
+# ==================== 2. HAFTALIK MAAŞ SİSTEMİ ====================
+
+@bot.command()
+@commands.cooldown(1, 604800, commands.BucketType.user)  # Tam 7 gün bekleme süresi (604800 saniye)
+async def maas(ctx):
+    """Oyuncunun rolüne göre haftalık maaşını doğrudan bankaya yatırır."""
+    data = veri_yukle()
+    uid = str(ctx.author.id)
+    data = kullanici_kontrol(data, uid)
+    
+    maas_miktari = MAAS_SISTEMI["işsiz"]
+    meslek_adi = "İşsiz"
+    
+    # Kullanıcının rollerini kontrol edip en yüksek maaşlı olanı eşleştiriyoruz
+    for role in ctx.author.roles:
+        r_name = role.name.lower().strip()
+        if r_name in MAAS_SISTEMI:
+            maas_miktari = MAAS_SISTEMI[r_name]
+            meslek_adi = role.name
+            break
+            
+    if maas_miktari == 0:
+        ctx.command.reset_cooldown(ctx) # Bekleme süresini başlatma
+        return await ctx.send(f"🍷 {ctx.author.mention}, **{meslek_adi}** olarak devletten yasal maaş alamazsın! Paran illegal işlerden gelmeli.")
+        
+    data[uid]["banka"] += maas_miktari
+    veri_kaydet(data)
+    await ctx.send(f"💰 {ctx.author.mention}, **{meslek_adi}** mesleğin için haftalık maaşın olan **${maas_miktari:,}** banka hesabına eklendi!")
+
+@maas.error
+async def maas_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        s = int(error.retry_after)
+        gun = s // 86400
+        saat = (s % 86400) // 3600
+        dakika = (s % 3600) // 60
+        await ctx.send(f"⏳ {ctx.author.mention}, maaşını zaten çekmişsin! Yeni maaş gününe daha **{gun} gün, {saat} saat, {dakika} dakika** var.")
+
+# ==================== 3. GALERİ & EMLAK MARKETİ ====================
+
+@bot.command()
+async def market(ctx):
+    """Satılık ev, araba ve motor listesini gösterir."""
+    embed = discord.Embed(title="🏢 Şehir Galerisi & Emlak Ofisi", color=discord.Color.blue(), description="Satın almak için `!satınal <ürün-adı>` yazabilirsin.")
+    for urun, fiyat in MARKET.items():
+        embed.add_field(name=urun.title(), value=f"${fiyat:,}", inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def satınal(ctx, *, urun_adi: str):
+    """Bankadaki parayla marketten mülk satın alır."""
+    urun_adi = urun_adi.lower().strip()
+    if urun_adi not in MARKET:
+        return await ctx.send("❌ Galeride veya emlakçıda böyle bir ilan bulunamadı!")
+        
+    data = veri_yukle()
+    uid = str(ctx.author.id)
+    data = kullanici_kontrol(data, uid)
+    fiyat = MARKET[urun_adi]
+    
+    if data[uid]["banka"] < fiyat:
+        return await ctx.send(f"❌ Banka hesabında yeterli bakiye yok! Gereken para: **${fiyat:,}**")
+        
+    if urun_adi.title() in data[uid]["envanter"]:
+        return await ctx.send("❌ Buna zaten sahipsin, ikinci kez alamazsın!")
+        
+    data[uid]["banka"] -= fiyat
+    data[uid]["envanter"].append(urun_adi.title())
+    veri_kaydet(data)
+    await ctx.send(f"🎉 Tebrikler! **${fiyat:,}** ödeyerek yeni bir **{urun_adi.title()}** satın aldınız! Anahtarınız teslim edildi.")
+
+# ==================== 4. İLLEGAL SOYGUN SİSTEMİ ====================
+
+@bot.command()
+@commands.cooldown(1, 3600, commands.BucketType.user)  # Saatte bir kez soygun denenebilir
+async def soygun(ctx):
+    """%45 şansla riskli soygun yapar."""
+    data = veri_yukle()
+    uid = str(ctx.author.id)
+    data = kullanici_kontrol(data, uid)
+    
+    sans = random.randint(1, 100)
+    if sans <= 45:  # %45 Başarı Oranı
+        kazanc = random.randint(15000, 45000)
+        data[uid]["cüzdan"] += kazanc
+        veri_kaydet(data)
+        await ctx.send(f"🥷 🩸 **Soygun Başarılı!** Kasayı patlattın, polisleri atlattın ve cüzdanına **${kazanc:,}** nakit indirdin!")
+    else:
+        # Başarısızlık durumunda cüzdandan ceza kesilir (Eksiye düşmez)
+        data[uid]["cüzdan"] = max(0, data[uid]["cüzdan"] - 5000)
+        veri_kaydet(data)
+        await ctx.send("🚨 **POLİS BASKINI!** Planın patladı, kelepçeyi yedin. Karakolda cüzdanından **$5,000** ceza kestiler!")
+
+@soygun.error
+async def soygun_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"👮‍♂️ Sokaklar şu an çok tekinsiz ve polis devriyesi fazla! Yeni plan için **{int(error.retry_after)//60} dakika** pusuya yatmalısın.")
+
+# ==================== 5. KUMAR (BLACKJACK - 21) ====================
+
+@bot.command()
+async def blackjack(ctx, bahis: int):
+    """Cüzdandaki nakit parayla kasaya karşı 21 oynar."""
+    data = veri_yukle()
+    uid = str(ctx.author.id)
+    data = kullanici_kontrol(data, uid)
+    
+    if bahis <= 0 or data[uid]["cüzdan"] < bahis:
+        return await ctx.send("❌ Cüzdanında bu boyutta bahis oynayacak nakit paran yok!")
+        
+    oyuncu_eli = random.randint(12, 21)
+    kasa_eli = random.randint(13, 21)
+    
+    if oyuncu_eli > kasa_eli:
+        data[uid]["cüzdan"] += bahis
+        await ctx.send(f"🃏 **KAZANDIN!**\nSenin elin: `{oyuncu_eli}` | Kasanın eli: `{kasa_eli}`\n👑 Şans seninleymiş! Cüzdanına **${bahis:,}** eklendi.")
+    elif oyuncu_eli < kasa_eli:
+        data[uid]["cüzdan"] -= bahis
+        await ctx.send(f"🃏 **KASA KAZANDI!**\nSenin elin: `{oyuncu_eli}` | Kasanın eli: `{kasa_eli}`\n💸 Masadan **${bahis:,}** kayıpla ayrıldın.")
+    else:
+        await ctx.send(f"🃏 **BERABERLİK!**\nİki tarafın da eli: `{oyuncu_eli}`\nParan cüzdanına iade edildi.")
+    veri_kaydet(data)
+
+# ==================== 6. YÖNETİCİ (ADMIN) GÜÇ KOMUTLARI ====================
+
+@bot.command()
+@commands.has_any_role("Kurucu", "Admin") # Sadece bu rollere sahip olanlar kullanabilir
+async def paraver(ctx, member: discord.Member, miktar: int):
+    """Adminlerin bir oyuncunun bankasına havadan para eklemesini sağlar."""
+    data = veri_yukle()
+    mid = str(member.id)
+    data = kullanici_kontrol(data, mid)
+    
+    data[mid]["banka"] += miktar
+    veri_kaydet(data)
+    await ctx.send(f"⚙️ **Yönetici Sistemi:** {member.mention} kullanıcısının banka hesabına başarıyla **${miktar:,}** bakiye eklendi.")
+
+@bot.command()
+@commands.has_any_role("Kurucu", "Admin")
+async def parasil(ctx, member: discord.Member, miktar: int):
+    """Adminlerin bir oyuncunun bankasından para silmesini sağlar."""
+    data = veri_yukle()
+    mid = str(member.id)
+    data = kullanici_kontrol(data, mid)
+    
+    data[mid]["banka"] = max(0, data[mid]["banka"] - miktar)
+    veri_kaydet(data)
+    await ctx.send(f"⚙️ **Yönetici Sistemi:** {member.mention} kullanıcısının banka hesabından **${miktar:,}** silindi.")
+
+# Botu Başlatma Satırı
+bot.run("MTUyMjI5Nzk1MzIwNzcxNzkwOA.G49Ene.h-o4WfGZIp2CgO7R6R2eBS17qbV-o8qd1HvJ-o")
